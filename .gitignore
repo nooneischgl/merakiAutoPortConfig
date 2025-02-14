@@ -1,4 +1,4 @@
 .venv/
 Logs/*
-!Logs/
+!Logs/blanklog.txt
 testing-*

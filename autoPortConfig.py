@@ -21,7 +21,6 @@ macListFile = args.maclist
 swtag = args.swtag
 netName = args.networkname
 
-automationSWDeviceTag = 'swAutomated'
 configSwPortTag = 'scriptConfigured'
 unconfigSwPortTag = 'scriptUnConfigured'
 defaultVLAN = 999
@@ -99,22 +98,35 @@ def cleanUpDeploy(netID):
         swPortStatus = dashboard.switch.getDeviceSwitchPortsStatuses(swserial)
         lldpcdp = dashboard.devices.getDeviceLldpCdp(swserial)
         print(f'SW Port Status: {swPortStatus[0]}')
+         # Create a dictionary mapping port ID to status
+        port_status_map = {str(port["portId"]): port.get("status", "Disconnected") for port in swPortStatus}
 
-                # Iterate through each port defined in `lldpcdp["ports"]`
-        for port_id, port_data in lldpcdp.get("ports", {}).items():
-            # Find matching port in switch configuration
-            matching_port = next((p for p in swPortConfig if str(p["portId"]) == port_id), None)
+         # Iterate through each port in switch configuration
+        for port in swPortConfig:
+            port_id = str(port["portId"])  # Ensure port ID is a string
 
-            if matching_port and configSwPortTag in matching_port.get('tags', []):
-                if "deviceMac" in port_data:
-                    mac_address = port_data["deviceMac"]
-                    if not checkMac(mac_address, ouiData):
-                        print(f"Unconfiguring Port {port_id} on Switch {swserial} due to OUI mismatch")
-                        configAccessSwitchPort(swserial, port_id, '999', unconfigSwPortTag)  # Unconfigure the port
-                else:
-                    print(f"No MAC address found for Port {port_id}, skipping OUI check.")
-                  
+            if configSwPortTag in port.get('tags', []):
+                # Check if port is disconnected
+                port_status = port_status_map.get(port_id, "Disconnected")
+                if port_status != "Connected":
+                    print(f"Unconfiguring Port {port_id} on Switch {swserial} due to disconnection")
+                    configAccessSwitchPort(swserial, port_id, '999', unconfigSwPortTag)  # Unconfigure the port
+                    continue  # Skip further checks
 
+                # Get corresponding LLDP/CDP port data
+                port_data = lldpcdp.get("ports", {}).get(port_id, {})
+
+                # If no LLDP/CDP data exists, unconfigure the port
+                if not port_data:
+                    print(f"Unconfiguring Port {port_id} on Switch {swserial} due to missing LLDP/CDP data")
+                    configAccessSwitchPort(swserial, port_id, '999', unconfigSwPortTag)  # Unconfigure the port
+                    continue  # Skip OUI check
+
+                # If LLDP/CDP data exists, check MAC OUI
+                mac_address = port_data.get("deviceMac")
+                if mac_address and not checkMac(mac_address, ouiData):
+                    print(f"Unconfiguring Port {port_id} on Switch {swserial} due to OUI mismatch")
+                    configAccessSwitchPort(swserial, port_id, '999', unconfigSwPortTag)  # Unconfigure the port
 
 
 def main():
