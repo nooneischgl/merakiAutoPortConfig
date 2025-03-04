@@ -1,0 +1,11 @@
+{
+    "IsEncrypted": false,
+    "Values": {
+      "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+      "FUNCTIONS_WORKER_RUNTIME": "python",
+      "ORG_ID": "your_org_id",
+      "MAC_LIST_FILE": "path_to_mac_list_file",
+      "SW_TAG": "your_sw_tag",
+      "NETWORK_NAME": "your_network_name"
+    }
+  }

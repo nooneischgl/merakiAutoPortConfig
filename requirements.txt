@@ -1,3 +1,4 @@
 meraki
 argparse
 logging
+azure-functions
