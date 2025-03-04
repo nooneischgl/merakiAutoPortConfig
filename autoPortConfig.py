@@ -3,6 +3,7 @@ import meraki.aio
 import argparse
 import json
 import logging
+import asyncio
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -25,15 +26,6 @@ configSwPortTag = 'scriptConfigured'
 unconfigSwPortTag = 'scriptUnConfigured'
 defaultVLAN = 999
 
-dashboard = meraki.DashboardAPI(log_path='Logs/')
-
-
-#Get Network ID
-allNetworks = dashboard.organizations.getOrganizationNetworks(orgID)
-for network in allNetworks:
-    if network['name'] == netName:
-        netID = network['id']
-
 
 def load_oui_data(text_file):
     """Load MAC addresses from a line-separated text file and extract their OUIs."""
@@ -52,89 +44,68 @@ def checkMac(mac_address, oui_data):
 ouiData = load_oui_data(macListFile)
 
 
-def findAutomatedSwitches(netID, swtag):
-    devices = dashboard.networks.getNetworkDevices(netID)
+async def findAutomatedSwitches(dashboard, netID, swtag):
+    devices = await dashboard.networks.getNetworkDevices(netID)
     automatedSwitches = []
     for device in devices:
         if swtag in device['tags']:
             automatedSwitches.append(device)
-
-    #print(automatedSwitches)
     return automatedSwitches
 
-def configTrunkSwitchPort(serial, portID, nativeVlan, allowVlans, swPortTag):
-    dashboard.switch.updateDeviceSwitchPort(serial, portID, type = 'trunk', vlan = nativeVlan, allowedVlans = allowVlans, tags = [swPortTag])
+async def configTrunkSwitchPort(dashboard, serial, portID, nativeVlan, allowVlans, swPortTag):
+    await dashboard.switch.updateDeviceSwitchPort(serial, portID, type='trunk', vlan=nativeVlan, allowedVlans=allowVlans, tags=[swPortTag])
 
-def configAccessSwitchPort(serial, portID, vlanID, swPortTag):
-    dashboard.switch.updateDeviceSwitchPort(serial, portID, type = 'access', vlan = vlanID, tags = [swPortTag])
+async def configAccessSwitchPort(dashboard, serial, portID, vlanID, swPortTag):
+    await dashboard.switch.updateDeviceSwitchPort(serial, portID, type='access', vlan=vlanID, tags=[swPortTag])
 
-def findAP(swserial): 
-   # need to check timing between API calls (see if one updates faster than the other)
-   # picking lldpcpd for now since it grabs from the switch directly and returns the deivce mac 
-   #swports = meraki.switch.getDeviceSwitchPortsStatuses(serial=swserial)
-   swports = dashboard.devices.getDeviceLldpCdp(swserial)
+async def findAP(dashboard, swserial):
+    swports = await dashboard.devices.getDeviceLldpCdp(swserial)
+    for port, port_data in swports.get("ports", {}).items():
+        print(f"\nPort: {port}")
+        device_mac = port_data.get("deviceMac", "N/A")
+        print(f'MAC {extract_oui(device_mac)} OUI List {ouiData} Results {checkMac(device_mac,ouiData)}')
+        if checkMac(device_mac, ouiData):
+            await configTrunkSwitchPort(dashboard, swserial, port, '311', 'all', configSwPortTag)
+        for key, value in port_data.items():
+            print(f"  {key}: {value}")
 
-   for port, port_data in swports.get("ports", {}).items():
-
-    print(f"\nPort: {port}")
-    device_mac = port_data.get("deviceMac", "N/A")
-
-    print(f'MAC {extract_oui(device_mac)} OUI List {ouiData} Results {checkMac(device_mac,ouiData)}')
-
-    if checkMac(device_mac,ouiData):
-        # Port config could be dynamic
-        configTrunkSwitchPort(swserial, port, '311', 'all', configSwPortTag)
-
-    #For debugging 
-    for key, value in port_data.items():
-        print(f"  {key}: {value}")
-
-def cleanUpDeploy(netID):
-
-    devices = findAutomatedSwitches(netID, swtag)
+async def cleanUpDeploy(dashboard, netID):
+    devices = await findAutomatedSwitches(dashboard, netID, swtag)
     for device in devices:
         swserial = device['serial']
-        swPortConfig = dashboard.switch.getDeviceSwitchPorts(swserial)
-        swPortStatus = dashboard.switch.getDeviceSwitchPortsStatuses(swserial)
-        lldpcdp = dashboard.devices.getDeviceLldpCdp(swserial)
+        swPortConfig = await dashboard.switch.getDeviceSwitchPorts(swserial)
+        swPortStatus = await dashboard.switch.getDeviceSwitchPortsStatuses(swserial)
+        lldpcdp = await dashboard.devices.getDeviceLldpCdp(swserial)
         print(f'SW Port Status: {swPortStatus[0]}')
-         # Create a dictionary mapping port ID to status
         port_status_map = {str(port["portId"]): port.get("status", "Disconnected") for port in swPortStatus}
-
-         # Iterate through each port in switch configuration
         for port in swPortConfig:
-            port_id = str(port["portId"])  # Ensure port ID is a string
-
+            port_id = str(port["portId"])
             if configSwPortTag in port.get('tags', []):
-                # Check if port is disconnected
                 port_status = port_status_map.get(port_id, "Disconnected")
                 if port_status != "Connected":
                     print(f"Unconfiguring Port {port_id} on Switch {swserial} due to disconnection")
-                    configAccessSwitchPort(swserial, port_id, '999', unconfigSwPortTag)  # Unconfigure the port
-                    continue  # Skip further checks
-
-                # Get corresponding LLDP/CDP port data
+                    await configAccessSwitchPort(dashboard, swserial, port_id, '999', unconfigSwPortTag)
+                    continue
                 port_data = lldpcdp.get("ports", {}).get(port_id, {})
-
-                # If no LLDP/CDP data exists, unconfigure the port
                 if not port_data:
                     print(f"Unconfiguring Port {port_id} on Switch {swserial} due to missing LLDP/CDP data")
-                    configAccessSwitchPort(swserial, port_id, '999', unconfigSwPortTag)  # Unconfigure the port
-                    continue  # Skip OUI check
-
-                # If LLDP/CDP data exists, check MAC OUI
+                    await configAccessSwitchPort(dashboard, swserial, port_id, '999', unconfigSwPortTag)
+                    continue
                 mac_address = port_data.get("deviceMac")
                 if mac_address and not checkMac(mac_address, ouiData):
                     print(f"Unconfiguring Port {port_id} on Switch {swserial} due to OUI mismatch")
-                    configAccessSwitchPort(swserial, port_id, '999', unconfigSwPortTag)  # Unconfigure the port
+                    await configAccessSwitchPort(dashboard, swserial, port_id, '999', unconfigSwPortTag)
 
-
-def main():
-    automatedSwitches = findAutomatedSwitches(netID, swtag)
-    for switch in automatedSwitches:
-       findAP(switch['serial'])
-    
-    cleanUpDeploy(netID)
+async def main():
+    async with meraki.aio.AsyncDashboardAPI(log_path='Logs/') as dashboard:
+        allNetworks = await dashboard.organizations.getOrganizationNetworks(orgID)
+        for network in allNetworks:
+            if network['name'] == netName:
+                netID = network['id']
+        automatedSwitches = await findAutomatedSwitches(dashboard, netID, swtag)
+        for switch in automatedSwitches:
+            await findAP(dashboard, switch['serial'])
+        await cleanUpDeploy(dashboard, netID)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
