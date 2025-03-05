@@ -29,3 +29,4 @@ python autoPortConfig.py -OrgID <MerakiOrgID> -NetworkName  <MerakiNetworkName> 
 - SwTag, is the tag use to determine what switches the script should check / config
 - MacList is a line seprated list of MAC address, the MAC OUI of these MAC addresses will be matched on.
 - Network Name which should be in quotes 'network name' to pass through as a string, should excatly match the Meraki network name 
+- CDP / LLDP information can take up to 10 minutes to update within Dashboard / API.
