@@ -24,6 +24,9 @@ netName = args.networkname
 configSwPortTag = 'scriptConfigured'
 unconfigSwPortTag = 'scriptUnConfigured'
 defaultVLAN = 999
+dot1xPolicy = None
+
+trunkNative = 311
 
 dashboard = meraki.DashboardAPI(log_path='Logs/')
 
@@ -65,8 +68,8 @@ def findAutomatedSwitches(netID, swtag):
 def configTrunkSwitchPort(serial, portID, nativeVlan, allowVlans, swPortTag):
     dashboard.switch.updateDeviceSwitchPort(serial, portID, type = 'trunk', vlan = nativeVlan, allowedVlans = allowVlans, tags = [swPortTag])
 
-def configAccessSwitchPort(serial, portID, vlanID, swPortTag):
-    dashboard.switch.updateDeviceSwitchPort(serial, portID, type = 'access', vlan = vlanID, tags = [swPortTag])
+def configAccessSwitchPort(serial, portID, vlanID, swPortTag, dot1xPolicy = None):
+    dashboard.switch.updateDeviceSwitchPort(serial, portID, type = 'access', vlan = vlanID, tags = [swPortTag], accessPolicy = dot1xPolicy)
 
 def findAP(swserial): 
    # need to check timing between API calls (see if one updates faster than the other)
@@ -83,7 +86,8 @@ def findAP(swserial):
 
     if checkMac(device_mac,ouiData):
         # Port config could be dynamic
-        configTrunkSwitchPort(swserial, port, '311', 'all', configSwPortTag)
+        print(f"#### Configuring Port {port} on Switch {swserial} due to OUI match ####")
+        configTrunkSwitchPort(swserial, port, trunkNative, 'all', configSwPortTag)
 
     #For debugging 
     for key, value in port_data.items():
@@ -97,7 +101,7 @@ def cleanUpDeploy(netID):
         swPortConfig = dashboard.switch.getDeviceSwitchPorts(swserial)
         swPortStatus = dashboard.switch.getDeviceSwitchPortsStatuses(swserial)
         lldpcdp = dashboard.devices.getDeviceLldpCdp(swserial)
-        print(f'SW Port Status: {swPortStatus[0]}')
+        #print(f'SW Port Status: {swPortStatus[0]}')
          # Create a dictionary mapping port ID to status
         port_status_map = {str(port["portId"]): port.get("status", "Disconnected") for port in swPortStatus}
 
@@ -108,25 +112,25 @@ def cleanUpDeploy(netID):
             if configSwPortTag in port.get('tags', []):
                 # Check if port is disconnected
                 port_status = port_status_map.get(port_id, "Disconnected")
-                if port_status != "Connected":
-                    print(f"Unconfiguring Port {port_id} on Switch {swserial} due to disconnection")
-                    configAccessSwitchPort(swserial, port_id, '999', unconfigSwPortTag)  # Unconfigure the port
+                if port_status != "Connected" and unconfigSwPortTag not in port.get('tags', []):
+                    print(f"!!!!!! Unconfiguring Port {port_id} on Switch {swserial} due to disconnection !!!!!!!")
+                    configAccessSwitchPort(swserial, port_id, defaultVLAN, unconfigSwPortTag, dot1xPolicy)  # Unconfigure the port
                     continue  # Skip further checks
 
                 # Get corresponding LLDP/CDP port data
                 port_data = lldpcdp.get("ports", {}).get(port_id, {})
 
                 # If no LLDP/CDP data exists, unconfigure the port
-                if not port_data:
-                    print(f"Unconfiguring Port {port_id} on Switch {swserial} due to missing LLDP/CDP data")
-                    configAccessSwitchPort(swserial, port_id, '999', unconfigSwPortTag)  # Unconfigure the port
+                if not port_data and unconfigSwPortTag not in port.get('tags', []):
+                    print(f"!!!!!! Unconfiguring Port {port_id} on Switch {swserial} due to missing LLDP/CDP data !!!!!!")
+                    configAccessSwitchPort(swserial, port_id, defaultVLAN, unconfigSwPortTag, dot1xPolicy)  # Unconfigure the port
                     continue  # Skip OUI check
 
                 # If LLDP/CDP data exists, check MAC OUI
                 mac_address = port_data.get("deviceMac")
                 if mac_address and not checkMac(mac_address, ouiData):
-                    print(f"Unconfiguring Port {port_id} on Switch {swserial} due to OUI mismatch")
-                    configAccessSwitchPort(swserial, port_id, '999', unconfigSwPortTag)  # Unconfigure the port
+                    print(f"!!!!!!Unconfiguring Port {port_id} on Switch {swserial} due to OUI mismatch !!!!!!")
+                    configAccessSwitchPort(swserial, port_id, defaultVLAN, unconfigSwPortTag, dot1xPolicy)  # Unconfigure the port
 
 
 def main():
